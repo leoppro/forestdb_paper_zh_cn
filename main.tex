@@ -1,0 +1,83 @@
+%!TEX program = xelatex
+\documentclass[lang=cn]{elegantpaper}
+
+\title{ForestDB: A Fast Key-Value Storage System for Variable-Length String Keys}
+\author{Jung-Sang Ahn, Chiyoung Seo, Ravi Mayuram, Rahim Yaseen, Jin-Soo Kim, and Seungryoul Maeng}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent \sffamily 摘要\\
+
+\noindent \sffamily {\bfseries 关键词\quad} 键值存储系统\quad NoSQL\quad 索引结构\quad B$^+$-tree
+\end{abstract}
+
+\section{INTRODUCTION}
+
+\newpage
+
+\section{BACKGROUND}
+      
+\subsection{B$^+$-Tree and Prefix B$^+$-Tree}
+
+\subsection{Log-Structured Merge-Tree (LSM-Tree)}
+
+\subsection{Couchstore}
+
+\newpage
+
+\section{FORESTDB DESIGN}
+
+\subsection{HB$^+$-Trie}
+
+\subsection{Optimizations for Avoiding Skew in HB$^+$-Trie}
+
+\subsubsection{Overview}
+
+\subsubsection{Leaf B$^+$-Tree Extension}
+
+\subsubsection{Extension Threshold Analysis}
+
+\subsection{Log-Structured Write Buffer}
+
+\newpage
+
+\section{EVALUATION}
+
+\subsection{Comparison of Index Structures}
+
+\subsection{Full System Performance}
+
+\subsubsection{Key Length}
+
+\subsubsection{Read/Write Ratio}
+
+\subsubsection{Concurrent Read/Write Operation}
+
+\subsubsection{Range Scan}
+
+\subsubsection{The Effect of Write Buffer and HB$^+$-Trie}
+
+\subsubsection{Locality}
+
+\subsubsection{Real Dataset Results}
+
+\newpage
+
+\section{RELATED WORK}
+
+\newpage
+
+\section{CONCLUSIONS AND FUTURE WORK}
+
+\newpage
+
+\section{ACKNOWLEDGMENTS}
+
+\newpage
+
+\section{REFERENCES}
+
+\end{document}
