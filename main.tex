@@ -9,15 +9,11 @@
 \maketitle
 
 \begin{abstract}
-\noindent \sffamily 基于持久存储的键值映射数据对NoSQL数据库而言是非常重要的组成部分。大多数键值存储引擎使用树型结构建立数据索引，但是他们的时间和空间开销随着键长度的增加而急剧增大。这同时也影响着对整体吞吐量至关重要的合并和压缩操作的开销。这篇论文介绍了一个单节点大规模NoSQL数据库存储引擎，我们将其命名为ForestDB。ForestDB使用HB$^+$字典树索引方案，这是一种基于磁盘的结合字典树与B$^+$树的新型混合索引结构。对比于其他树型结构，它索引性能较高。即便是键非常长，在空间内随机分布，HB$^+$字典树也可以以较低的磁盘访问量获取任意长度的键。我们的评测结果显示，在每秒操作数与每更新操作磁盘写入数两个性能指标上，ForestDB都显著的优于Couchbase Server、LevelDB和RocksDB现有的键值存储引擎。\\
+\noindent \sffamily 持久化存储的键值映射数据对NoSQL数据库而言是非常重要的组成部分。大多数键值存储引擎使用树型结构建立数据索引，但是他们的时间和空间开销随着键长度的增加而急剧增大。这同时也影响着对整体吞吐量至关重要的合并和压缩操作的开销。这篇论文介绍了一个单节点大规模NoSQL数据库存储引擎，我们将其命名为ForestDB。ForestDB使用HB$^+$字典树索引方案，这是一种基于磁盘的结合字典树与B$^+$树的新型混合索引结构。对比于其他树型结构，它索引性能较高。即便是键非常长，在空间内随机分布，HB$^+$字典树也可以以较低的磁盘访问量获取任意长度的键。我们的评测结果显示，在每秒操作数与每更新操作磁盘写入数两个性能指标上，ForestDB都显著的优于Couchbase Server、LevelDB和RocksDB现有的键值存储引擎。\\
 
 \noindent \sffamily {\bfseries 关键词\quad} 键值存储系统\quad NoSQL\quad 索引结构\quad B$^+$树
 \end{abstract}
-
-\section{INTRODUCTION}
-
-\newpage
-
+\include{introduction}
 \section{BACKGROUND}
       
 \subsection{B$^+$-Tree and Prefix B$^+$-Tree}
@@ -25,8 +21,6 @@
 \subsection{Log-Structured Merge-Tree (LSM-Tree)}
 
 \subsection{Couchstore}
-
-\newpage
 
 \section{FORESTDB DESIGN}
 
@@ -41,8 +35,6 @@
 \subsubsection{Extension Threshold Analysis}
 
 \subsection{Log-Structured Write Buffer}
-
-\newpage
 
 \section{EVALUATION}
 
@@ -64,19 +56,11 @@
 
 \subsubsection{Real Dataset Results}
 
-\newpage
-
 \section{RELATED WORK}
-
-\newpage
 
 \section{CONCLUSIONS AND FUTURE WORK}
 
-\newpage
-
 \section{ACKNOWLEDGMENTS}
-
-\newpage
 
 \include{references}
 
