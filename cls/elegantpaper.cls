@@ -13,6 +13,7 @@
 \RequirePackage{ifthen}
 \RequirePackage{ifxetex}
 \RequirePackage{etoolbox}
+\RequirePackage{overpic}
 \RequirePackage{calc}
 \AtEndOfClass{\RequirePackage{microtype}}
 
