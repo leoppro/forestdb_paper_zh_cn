@@ -1,7 +1,7 @@
 %!TEX program = xelatex
 \documentclass[lang=cn]{cls/elegantpaper}
 
-\title{ForestDB: A Fast Key-Value Storage System for Variable-Length String Keys}
+\title{ForestDB：为不定长字符串键设计的高速键值存储系统}
 \author{Jung-Sang Ahn, Chiyoung Seo, Ravi Mayuram, Rahim Yaseen, Jin-Soo Kim, and Seungryoul Maeng}
 
 \begin{document}
@@ -15,19 +15,7 @@
 \end{abstract}
 \include{introduction}
 \include{background}
-\section{FORESTDB DESIGN}
-
-\subsection{HB$^+$-Trie}
-
-\subsection{Optimizations for Avoiding Skew in HB$^+$-Trie}
-
-\subsubsection{Overview}
-
-\subsubsection{Leaf B$^+$-Tree Extension}
-
-\subsubsection{Extension Threshold Analysis}
-
-\subsection{Log-Structured Write Buffer}
+\include{forestdb_design}
 
 \section{EVALUATION}
 

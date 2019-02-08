@@ -1,0 +1,263 @@
+\section{ForestDB的设计}
+
+为了高效的索引变长键，我们提出了ForestDB，它是为分布式NoSQL数据库设计的单节点后端键值存储引擎。ForestDB将作为Couchstore的替代品，因此两者的上层架构是类似的。两者方案的主要区别是：（1）ForestDB使用一种名为HB$^+$字典树新型混合索引结构，相比于传统B$^+$树，它可以高效的索引变长字符串。（2）通过结构化日志写入缓冲进一步提高ForestDB的写入吞吐量。结构化日志写入缓冲的基本概念类似LSM树中的C$_0$树和顺序日志，但后续不需要从写入缓冲中合并数据进主DB部分。
+
+\begin{figure}[htbp]
+    \centering
+    ~\\
+    \begin{overpic}[scale=1]{forestdb.png}
+        \put(3.5,41){\begin{turn}{-47} \tiny 更新\end{turn}}
+        \put(11.5,23){\scriptsize WB索引}
+        \put(62,23){\scriptsize HB$^+$字典树}
+        \put(38,27.5){\tiny 刷写}
+        \put(7.5,7.5){\scriptsize 文档}
+        \put(23,7.5){\scriptsize 文档}
+        \put(52,7.5){\scriptsize 文档}
+        \put(68.5,7.5){\scriptsize 文档}
+        \put(85,7.5){\scriptsize 文档}
+        \put(18,38){\scriptsize 位于内存}
+        \put(62,38){\scriptsize 位于磁盘（只追加）}
+        \put(64,50){\scriptsize 单一ForestDB实例}
+        \put(41,83){\scriptsize 键空间}
+    \end{overpic}
+	\caption{Couchstore概览\label{fig:forestdb}}
+\end{figure}
+
+图\ref{fig:forestdb}展示了ForestDB的总体架构。与Couchstore类似，这是一个vBucket的单一实例。每一个ForestDB实例包含一个基于内存的写入缓冲索引（WB索引）和一个HB$^+$字典树。所有文档更新追加至DB文件末尾，位于内存的写入缓冲索引持续同步文档在磁盘中的位置。当写入缓存索引中项数量超过一定阈值后，这些项将被刷写到HB$^+$字典树并持久化到DB文件中。在3.3章中将详细描述具体的运作过程。ForestDB的压缩过程与Couchstore相同。当陈旧数据尺寸超过一定阈值，压缩过程将被触发，当前所有的文档将被移动到新的DB文件中。
+
+\subsection{HB$^+$字典树}
+
+ForestDB的主要索引结构——HB$^+$字典树，是一个使用B$^+$树节点的Patricia字典树变种。HB$^+$字典树的基本思想源于我们先前的工作，主要是为只追加存储而设计。所有B$^+$树的叶节点存储其他B$^+$树（子树）的根节点或文档。B$^+$树节点和文档都会以只追加的方式写入DB文件，它们交错存在与文件中以便在Couchstore实现MVCC。在HB$^+$字典树上层有一个B$^+$树，子树则作为Patricia字典树的新节点按需创建。图\ref{fig:the_hierarchical_organization_of_hbptrie}a展示了HB$^+$字典树的逻辑布局，图\ref{fig:the_hierarchical_organization_of_hbptrie}b说明字典树节点如何以MVCC模式存储于硬盘中。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=1]{the_hierarchical_organization_of_hbptrie.png}
+        \put(2,21.3){\tiny 键：}
+        \put(1.2,15){\tiny 块1}
+        \put(5.6,15){\tiny 块2}
+        \put(10.3,15){\tiny 块3}
+        \put(2,11.5){\tiny 固定尺寸（本例中4字节）}
+        \put(5,8.5){\tiny B$^+$树（HB$^+$字典树的节点）}
+        \put(5,5.2){\tiny 文档}
+        \put(26,21.3){\tiny 根B$^+$树}
+        \put(34.5,19.5){\tiny 块1}
+        \put(26.5,14.5){\tiny 块2}
+        \put(43,14.5){\tiny 块2}
+        \put(30,9){\tiny 块3}
+        \put(37.5,4.6){\tiny 文档}
+        \put(70,27){\tiny 根B$^+$树}
+        \put(54.5,7){\tiny DB文件的非结构化视图}
+        \put(94,25){\tiny 最新数据}
+        \put(94,22.2){\tiny 陈旧数据}
+        \put(94,18){\tiny B$^+$树（HB$^+$字典树的节点）}
+        \put(94,15.2){\tiny B$^+$树的节点}
+        \put(94,12.4){\tiny 文档}
+        \put(101,3.8){\tiny 只追加}
+        \put(94,-0.4){\tiny 字节偏移}
+        \put(16,-3){\scriptsize (a)逻辑设计}
+        \put(70,-3){\scriptsize (b)磁盘数据模型}
+    \end{overpic}
+    \makebox[2em]{}
+    \\[2em]
+	\caption{HB$^+$字典树的分层结构\label{fig:the_hierarchical_organization_of_hbptrie}}
+\end{figure}
+
+HB$^+$字典树将输入的键拆分成固定大小的若干个块。块尺寸是可配置的（例如4或8字节），一组连续的块分别作为B$^+$树邻接层的键。检索文档时，从根B$^+$树中寻找键为第一个（最左边的）块的节点，从而获得其对应的字节偏移，递归向下层进行，直到定位到文档的位置。此外，如果字节偏移指向的是其他子树的根节点，我们使用下一个块在子树中递归搜索，直到目标文档被找到。
+
+因为B$^+$树的键尺寸固定为小于键字符串的块尺寸，B$^+$树节点的扇出比传统B$^+$树要大，所以我们可以缩短树的高度。此外，与传统Patricia字典树相同，通过公共分支共享公共前缀的方式跳过和压缩了键。当且仅当至少两个分支经过树时会创建子树。所有的文档使用可区分其他文档的块的最小集来索引。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=1]{hbptrie_insertion_examples.png}
+        \put(10,9){\scriptsize B$^+$树}
+        \put(10,2){\scriptsize 文档}
+        \put(50,31){\scriptsize 跳过的前缀}
+    \end{overpic}
+	\caption{HB$^+$字典树的插入示例：(a)初始状态；(b)插入$aaab$；(c)插入$aabb$\label{fig:hbptrie_insertion_examples}}
+\end{figure}
+
+图\ref{fig:hbptrie_insertion_examples}展示了一个插入过程的例子。假设块尺寸只有一个字节（本例中，一个字符），B$^+$树作为HB$^+$字典树的节点，用三角形表示。B$^+$树中的文本记录了如下内容：（1）当前B$^+$树使用第几个块作为键；（2）当前树的公共前缀。图\ref{fig:hbptrie_insertion_examples}a表示索引只存储键$aaaa$时的初始状态，根B$^+$树直接使用第一个块索引文档，因为键$aaaa$是唯一以$a$块起始的键。我们可以确保首个块$a$只对应键$aaaa$。因而我们可以避免后续的树遍历操作。
+
+我们将一个新键$aaab$插入到HB$^+$字典树，因为键$aaab$也起始与块$a$（参见图\ref{fig:hbptrie_insertion_examples}b），这时会创建一个新的子树。因为$aaaa$和$aaab$的公共最长前缀是$aaa$，新的子树将使用第四个块作为键，并存储该树距父树（本例中为根树）跳过的前缀$aa$。图\ref{fig:hbptrie_insertion_examples}c展示了插入键$aabb$时的情况。虽然键$aabb$也起始于块$a$，但是它不匹配此前跳过的前缀$aa$。于是我们在根和此前存在的子树之间创建一个新的子树。该子树使用第三个块作为键，因为$aabb$与此前存在的公共前缀$aaa$的最长公共前缀是$aa$。被跳过的前缀$a$储存于新的树，此前存在于在第四个块树的前缀被擦除，因为此时两颗树之间没有跳过的前缀。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=1]{an_example_of_random_key_indexing_using_hbptrie.png}
+        \put(6,31.5){\tiny 键}
+        \put(19,31.5){\tiny 首块}
+        \put(3,0){\tiny （块尺寸：2字节）}
+        \put(59,1){\scriptsize B$^+$树}
+        \put(80,1){\scriptsize 文档}
+    \end{overpic}
+	\caption{使用HB$^+$字典树的随机键索引示例\label{fig:an_example_of_random_key_indexing_using_hbptrie}}
+\end{figure}
+
+当公共前缀足够长时，HB$^+$字典树带来的好处是显而易见的。即便键的分布随机且无公共前缀，HB$^+$字典树同样能带来很多好处。图\ref{fig:an_example_of_random_key_indexing_using_hbptrie}展示了一个块尺寸为2字节的随机键的例子。因为其中的键没有公共前缀，第一个块就可以区分他们。在本例中，HB$^+$字典树只包含一个B$^+$树，不需要为了比较而创建任何子树。假设块尺寸是$n$位，且键分布均匀随机，那么在B$^+$树中仅通过首块就可以检索到至多$2n$个键。相比于传统B$^+$树，HB$^+$字典树惊人的将索引结构的空间占用降低了一个数量级。
+
+总的来说，当将足够长且含有公共前缀或键随机分布以至于没有公共前缀时，HB$^+$字典树都可以有效的降低由不必要的树遍历引起的磁盘访问开销。
+
+\subsection{HB$^+$字典树中树倾斜情况的优化}
+
+\subsubsection{概览}
+
+因为字典树并不是一个平衡结构，HB$^+$字典树在特定情况下会同传统字典树一样产生倾斜。图\ref{fig:skewed_hbptrie_examples}展示了块尺寸为1字节时，导致树倾斜的两个典型例子。如果我们连续插入一组块不断重复的键，例如$b$、$bb$和$bbb$，HB$^+$字典树就会产生类似图\ref{fig:skewed_hbptrie_examples}a展示的树倾斜情况。从而导致沿倾斜分支的查询操作引起的磁盘访问量增加。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=1]{skewed_hbptrie_examples.png}
+        \put(11,-5){\scriptsize (a)}
+        \put(66,-5){\scriptsize (b)}
+    \end{overpic}
+    \\[2em]
+	\caption{倾斜的HB$^+$字典树示例\label{fig:skewed_hbptrie_examples}}
+\end{figure}
+
+图\ref{fig:skewed_hbptrie_examples}b展示了倾斜HB$^+$字典树的另一个例子。如果键仅由0和1字符组成，那么每一个块只会有两个分支，因此所有的B$^+$树将只包含两个键值对。由于B$^+$树的扇出远高于2，则创建了大量的接近于空的块，导致块利用率将大大降低。于是，相较于传统B$^+$树，空间开销和块访问数都将大幅度增加。
+
+事实上，我们可以通过增大块尺寸来降低HB$^+$字典树倾斜的概率。在图\ref{fig:skewed_hbptrie_examples}中，如果我们将块尺寸设为8字节，每个块将有$2^8=256$个分支，B$^+$树会得到更合理的利用。然而随着块尺寸的增加，节点扇出将减少，进而导致总体性能的下降。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=1]{examples_of_optimization_for_avoiding_skew.png}
+        \put(9,5.5){\scriptsize 非叶B$^+$树（键尺寸固定）}
+        \put(9,1){\scriptsize 叶B$^+$树（键尺寸不定）}
+        \put(76,5.5){\scriptsize 非叶B$^+$树（键尺寸固定）}
+        \put(76,1){\scriptsize 叶B$^+$树（键尺寸不定）}
+        \put(19,-4){\scriptsize (a)初始状态}
+        \put(66,-4){\scriptsize (b)左侧叶B$^+$扩展后的状态}
+    \end{overpic}
+    \\[2em]
+	\caption{避免倾斜的优化示例\label{fig:examples_of_optimization_for_avoiding_skew}}
+\end{figure}
+
+为了解决这个问题，我们提出了一个优化方案。首先我们定义，叶B$^+$树即没有子树的非根B$^+$树。不同于非叶B$^+$树存储固定尺寸的块，叶B$^+$树存储变长字符串，这个字符串即未作为其父B$^+$树中块的键后缀。图\ref{fig:examples_of_optimization_for_avoiding_skew}展示了叶B$^+$树的组织形式。途中白色三角形和黑色三角形分别表明非叶B$^+$树和叶B$^+$树。非叶B$^+$树包括根B$^+$树索引或使用相应块做键的子树，而叶B$^+$树使用剩余的子串作为键。例如，图\ref{fig:examples_of_optimization_for_avoiding_skew}a中左侧的叶B$^+$树分别使用文档的后缀$aaa$、$aabc$、$abb$（从第二个块开始）索引文档$aaaa$、$aaabc$和$aabb$。在这种方式下，几遍我们插入可以引起树倾斜的键集，也不会创建更多子树，从而避免多余的树遍历。
+
+\subsubsection{叶B$^+$树的延伸}
+
+但是这种数据结构几乎继承了传统B$^+$树的所有缺点。为了避免这些问题，当叶B$^+$树中容纳的键总数超过一定阈值时，我们将叶B$^+$向下延伸。扩展步骤如下：我们首先找到目标叶B$^+$树中键的最长公共前缀。为第一个不同的块创建一个新非叶B$^+$树，相应的文档使用新的块重建索引。如果有多余一个键使用相同的块，我们则使用剩余的子串作为键创建一个新叶B$^+$树。
+
+图\ref{fig:examples_of_optimization_for_avoiding_skew}b展示了一个将图\ref{fig:examples_of_optimization_for_avoiding_skew}a左侧叶B$^+$节点延伸的例子。因为$aaaa$、$aaabc$和$aabb$的公共前缀是$aa$，索引使用第三个块创建一个新的非叶B$^+$树，文档$aabb$通过其第三个块$b$索引。但$aaaa$和$aaabc$拥有公共的第三个块$a$，因此我们创建一个新的叶B$^+$树，使用余下的子串$a$和$bc$索引这些文档。
+
+这种方案将键空间分为两种不同的区域：倾斜区域和普通区域。倾斜区域即叶B$^+$树索引的键集，剩下的键集合则为普通区域。因为原生HB$^+$字典树在先前叙述的键倾斜情况下非常低效，我们必须非常谨慎的设置延伸阈值以防止倾斜键蔓延到普通区域。
+
+\subsubsection{对延伸阈值的分析}
+
+最佳的延伸阈值，应该是给定键集字典树索引和类树索引开销的平衡点。为了找出最佳的延伸阈值，我们对两种索引的开销进行了数学分析。从直觉来看，字典树结构的高度和空间占用（例如，节点数）与每一个块中的独立分支数高度相关，而对于类树结构，最关键的影响因素只有键长度。于是，我们通过键集中键的长度和每个块的分支数分析使得字典树的高度和空间占用都小于类树结构的平衡点。
+
+\begin{figure}[htbp]
+    \centering
+    {
+    \bfseries
+    表1 \\
+    符号定义 \\[1.5em]
+    }
+    \begin{tabular}{|p{3em}p{14em}|p{3em}p{14em}|}
+    \hline
+    符号 & 定义 & 符号 & 定义 \\
+    \hline
+    $n$ & 文档数 & $f_L^{new}$ & 延伸后新叶B$^+$树节点的扇出 \\
+    $B$ & 块尺寸 & $s$ & 叶B$^+$树的空间开销 \\
+    $k$ & 叶B$^+$树中键长度 & $s_{new}$ & 延伸后新结合的数据结构的空间开销 \\
+    $c$ & HB$^+$字典树的块的长度 & $h$ & 叶B$^+$树的高度 \\
+    $v$ & 值（例如，字节偏移量）或指针的尺寸 & $h_{new}$ & 延伸后新结合的数据结构的高度 \\
+    $f_N$ & 非叶B$^+$树节点的扇出 & $b$ & 给定键集下每个块的独立分支数量 \\
+    $f_L$ & 叶B$^+$树节点的扇出 & & \\
+    \hline
+    \end{tabular}
+\end{figure}
+
+表1罗列了我们分析中使用的符号。假设一个叶B$^+$树索引了$n$个文档，每个B$^+$树节点恰好与存储设备块对齐，其尺寸是$B$。所有的键长度相同，为$k$，因此长度$k$大于等于$c\lceil\log_bn\rceil$,其中$c$和$b$分别表示HB$^+$字典树的块尺寸和每个块的独立分支数量。由此易得每个叶B$^+$树节点扇出$f_L$，如下：
+
+\begin{equation}
+f_L=\left\lfloor\frac{B}{k+v}\right\rfloor, \label{equation1}
+\end{equation}
+
+其中$v$表示字节偏移量或指针的尺寸。对于给定$n$个文档，我们可以得出叶B$^+$树\footnote{为了简化计算，我们忽略了叶B$^+$树中索引节点所占用的空间$s$，因为与叶节点相比，它们占用的空间微乎其微。}整体的空间占用，以及叶B$^+$树的高度$h$，如下：
+
+\begin{equation}
+s\simeq\left\lceil\frac{n}{f_L}\right\rceil B, \label{equation2}
+\end{equation}
+\begin{equation}
+h=\left\lceil\log_{f_L}n\right\rceil. \label{equation3}
+\end{equation}
+
+延伸过程中，当每个块含有$b$个分支时，将创建$b$个新的叶B$^+$树。同时也将创建一个非叶B$^+$树\footnote{这里假设最差的情况，即非叶B$^+$树没有直接指向文档。}指向$b$个新的叶B$^+$树。我们先前提到，新的叶B$^+$树以其父非叶B$^+$树\footnote{假设这里没有跳过公共前缀。}块使用的右侧剩余子串作为键，因此新的叶B$^+$树扇出$f_L^{new}$可以使用下面的公式表示：
+
+\begin{equation}
+f_L^{new}=\left\lfloor\frac{B}{(k-c)+v}\right\rfloor. \label{equation4}
+\end{equation}
+
+因为非叶B$^+$树使用一个块作为键，因此其扇出$f_N$可以使用下面的公式表示：
+
+\begin{equation}
+f_N=\left\lfloor\frac{B}{c+v}\right\rfloor. \label{equation5}
+\end{equation}
+
+通过$f_N$和$f_L^{new}$，可知新混合数据结构的空间占用和高度，分别记作$s_{new}$和$h_{new}$，如下：
+
+\begin{equation}
+s_{new}\simeq\left(\left\lceil\frac{b}{f_N}\right\rceil+b\left\lceil\frac{n}{b\cdot f_L^{new}}\right\rceil\right) B, \label{equation6}
+\end{equation}
+\begin{equation}
+h_{new}=\left\lceil\log_{f_N}b\right\rceil+\left\lceil\log_{f_N^{new}}\frac{n}{b}\right\rceil. \label{equation7}
+\end{equation}
+
+图\ref{fig:space_overhead_and_height}a是当$b$取2、8、64和256时$s_{new}$对$s$归一化的值。我们如下设置参数值：$B=4096$、$k=64$、$c=8$、$v=8$，则可算得$f_L=56$、$f_N=256$、$f_L^{new}=64$。空间开销随$b$的增加而增长。这是因为延伸过程创建了$b$个新的叶B$^+$树。而一个B$^+$树至少占一个块，$b$个新的叶B$^+$树就至少占$b$个块，又有$\left\lceil\frac{n}{f_L}\right\rceil$个块被原有的叶B$^+$树占用。当$b<\frac{n}{f_L}\Leftrightarrow n>b\cdot f_L$时，$s_{new}$小于$s$，这个点是新的叶B$^+$树对块占用小于延伸前块占用的分界点。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{space_overhead_and_height.png}
+        \put(-3,20){\scriptsize \parbox[l]{1em}{归一化空间开销}}
+        \put(52,20){\scriptsize \parbox[l]{1em}{归一化平均高度}}
+        \put(18,-3){\scriptsize 文档数（$n$）}
+        \put(75,-3){\scriptsize 分支数（$b$）}
+        \put(7,-10){\scriptsize \parbox[l]{15em}{（a）$b$取不同值时，$s_{new}/s$值随文档数$n$的变化}}
+        \put(62,-10){\scriptsize \parbox[l]{15em}{（b）当文档数$n$在$b\cdot f_L$、$b\cdot f_L^2$之间时，$h_{new}/h$平均值随$b$的变化}}
+    \end{overpic}
+    \\[4.5em]
+	\caption{叶B$^+$树扩展前后，其空间占用（a）及高度（b）的归一化值的折线图。\label{fig:space_overhead_and_height}}
+\end{figure}
+
+然而，尽管延伸后空间开销减少了，整体的高度却是增加的。图\ref{fig:space_overhead_and_height}b展示了延伸后不同$b$值下混合数据结构的平均高度$h_{new}$。高度对延伸前叶B$^+$树的高度$h$进行了归一化处理。当$b$大于原有叶B$^+$树扇出$f_L$时，新的高度$h_{new}$将小于先前的高度$h$，因为延伸后非叶B$^+$树中的分支数大于扩展前叶B$^+$树扇出。
+
+在权衡上述因素后，我们认为在以下条件下应该延伸叶B$^+$树：（1）$n>b\cdot f_L$（2）$b\ge f_L$.值得注意的是，我们必须扫描所有在叶B$^+$树中的键才能获得$k$和$b$的准确值，这将引起大量的磁盘I/O操作。为了避免这种开销，我们只扫描叶B$^+$树的根节点。根节点包含的键集中，键的间隔是近似相等的，因此我们可以估计近似值。而根节点已经因先前的树操作被缓存，因此我们不需要额外的磁盘I/O操作。
+
+\subsection{结构化日志写入缓冲}
+
+虽然HB$^+$字典树可以降低树高度以及整体空间占用，但写入操作仍然会引起不少于一个B$^+$树节点追加至DB文件。为了降低写入操作开销，ForestDB使用结构化日志写入缓冲减少每次写入操作引起的追加数据量。它和LSM树中的C0树和顺序日志非常类似，但是被插入到写缓冲部分的文档不需要被合并到主DB部分，因为主DB本身也基于结构化日志设计。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{write_buffer_examples.png}
+            \put(4,6.5){\scriptsize 磁盘（只追加）}
+            \put(49,6.5){\scriptsize 磁盘（只追加）}
+            \put(15,10){\scriptsize 位于内存}
+            \put(60,10){\scriptsize 位于内存}
+            \put(30,14){\tiny \parbox[t]{3em}{写缓存\\\makebox[3em][c]{索引}}}
+            \put(75,14){\tiny \parbox[t]{3em}{写缓存\\\makebox[3em][c]{索引}}}
+            \put(26.5,-1){\scriptsize 写缓冲中的文档}
+            \put(4,3.5){\scriptsize 文档}
+            \put(26,3.5){\scriptsize 文档}
+            \put(35,3.5){\scriptsize 文档}
+            \put(49,3.5){\scriptsize 文档}
+            \put(71.5,3.5){\scriptsize 文档}
+            \put(80,3.5){\scriptsize 文档}
+            \put(13,3.5){\scriptsize 索引节点}
+            \put(58.5,3.5){\scriptsize 索引节点}
+            \put(88.5,3.5){\scriptsize 索引节点}
+            \put(13,-4){\scriptsize （a）刷新写缓冲前}
+            \put(69,-4){\scriptsize （b）刷新写缓冲后}
+    \end{overpic}
+    \\[3em]
+	\caption{写入缓冲示例。\label{fig:write_buffer_examples}}
+\end{figure}
+
+图\ref{fig:write_buffer_examples}a 展示了一个例子。白色方块中文档表示一组用于文档的临近的磁盘块，灰色方块中索引节点表示用于由B$^+$树节点组成的HB$^+$字典树的块。进行提交操作时，一个包含DB头信息的块被追加至文件末尾，我们用深灰色方块中的H表示它。
+
+所有文档更新被简单的追加到文件的末尾，而对于HB$^+$字典树的更新是滞后的。我们使用一种位于内存的写入缓冲索引记录那些已经被写入文件但尚未被HB$^+$字典树索引的文档位置。当响应查询文档的请求时，ForestDB首先在写入缓冲索引中查找，如果没有命中则继续查找HB$^+$字典树。
+
+当且仅当提交日志的累积尺寸超过了某个预设阈值（例如，1024个文档）时，下一次提交操作将触发对写缓冲中各项的刷新，以及原子性的映射到HB$^+$树中。在刷新写缓冲后，写缓冲中更新的文档对应的索引节点将被追加至文件末尾，如图\ref{fig:write_buffer_examples}b所示。据前述，文档本身并不需要移动或者合并，只需要使用更新的索引节点链接，因为ForestDB已经使用了结构化日志的设计。这大幅度减少了刷新写缓冲的整体开销。
+
+如果在刷新之前写缓冲崩溃了，我们可以从文件末尾反向检索每一个块，直到找到最后一个在索引节点后写入的有效的DB头。只要DB头被找到，ForestDB就可以通过头后面被写入的文档重建写缓冲索引项。我们还为每一个文档维护一个CRC32校验值，因此只要文档被正常写入，就是可以被恢复的。
+
+通过结构化日志写入缓冲，大量的索引更新操作被转化为批量的，因此可以降低每文档更新引起的磁盘I/O数。这使得ForestDB的写入性能可以比肩甚至超越LSM树的写性能。

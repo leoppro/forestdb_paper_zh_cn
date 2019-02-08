@@ -49,6 +49,7 @@
 \RequirePackage{multicol}
 \RequirePackage{xcolor}
 \RequirePackage{graphicx}
+\RequirePackage{rotating}
 \RequirePackage{fancyvrb}
 \RequirePackage{type1cm}
 
