@@ -1,0 +1,236 @@
+\section{评测}
+
+在本章中，我们通过评测结果来展示ForestDB的关键特性。ForestDB实现为Couchbase服务器的单机键值存储库。评测运行在64位Linux 3.8.0-29平台上，配备Intel Core i7-3770 @ 3.40 GHz CPU（4 cores, 8 threads），32GB RAM，Western Digital Caviar Blue 1TB HDD\footnote{WD10EALX，最大数据传输速率：126 MB/s。}，磁盘被格式化为Ext4文件系统。所有的评测中，HB$^+$字典树的块尺寸都被设为8字节，HB$^+$字典树中的叶B$^+$树的实现为前缀B$^+$树。
+
+\subsection{索引结构比较}
+
+首先我们对比HB$^+$字典树和传统B$^+$树、前缀B$^+$树的整体空间开销和遍历路径平均长度。我们人为的插入一百万个文档，以及其对应的一百万个键被插入到索引中，每个键映射一个8字节的文档位置偏移量，以此作为初始状态。为了验证避免树倾斜的优化方案，我们使用表2所描述的四种键模式：随机、最糟、小健、两层。每一个B$^+$树节点对齐到4KB块尺寸，所有包含HB$^+$字典树的索引使用就地更新的方式写入以精确估计实时的索引尺寸。
+
+\begin{figure}[htbp]
+    \centering
+    {
+    \bfseries
+    表2 \\
+    键模式特征 \\[1.5em]
+    }
+    \begin{tabular}{|p{2em}p{30em}p{6em}|}
+    \hline
+    名称 & 描述 & 键长度 \\
+    \hline
+    随机 & 该键模式中所有键随机产生，键之间没有公共前缀，对于HB$^+$树而言，这是最佳的键模式。 & 8-256字节 \\
+    最糟 & 该键模式中所有键含有20层嵌套前缀，每一层前缀仅有两个分支。每一层的平均前缀尺寸时10字节。对于HB$^+$树而言，这是最糟的键模式。 & 平均198字节 \\
+    小键 & 该键模式中有100个随机产生的前缀，每10000个键共享一个公共前缀。平均前缀尺寸是10字节，非前缀部分键字符串是随机生成的。 & 平均65字节 \\
+    两层 & 该键模式中所有的键含有两层嵌套前缀，每层包含192个分支。每层的平均前缀尺寸为10字节，非前缀部分键字符串是随机生成的。 & 平均64字节 \\
+    \hline
+    \end{tabular}
+\end{figure}
+
+图\ref{fig:comparison_random_key_pattern}a展示了每个使用随机键模式初始化后的索引结构的磁盘空间占用情况，其键长度分布在8-256字节之间。B$^+$树和前缀B$^+$树的空间开销随键长度线性增长，而HB$^+$字典树保持不变。这是因为所有的键可以只通过它的第一个块索引，因此键长度不影响HB$^+$字典树的空间开销。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{comparison_random_key_pattern.png}
+        \put(19,-3){\scriptsize 键长度（字节）}
+        \put(73,-3){\scriptsize 键长度（字节）}
+        \put(17,-6){\scriptsize （a）空间开销}
+        \put(70,-6){\scriptsize （b）HDD磁盘时延}
+        \put(-5,20){\scriptsize \parbox[l]{1em}{空间开销（MB）}}
+        \put(50,20){\scriptsize \parbox[l]{1em}{磁盘时延（ms）}}
+    \end{overpic}
+    \\[3em]
+	\caption{在随机键模式下，B$^+$树、前缀B$^+$树和HB$^+$字典树的对比实验。\label{fig:comparison_random_key_pattern}}
+\end{figure}
+
+为了评估从根节点到叶的平均遍历长度，我们随机读取键值对，记录树操作期间的磁盘访问时间开销。因为当磁盘I/O操作请求命中操作系统页缓存时，磁盘操作将被跳过，所以我们开启了O\_DIRECT标记使得所有的树节点读操作引起实际的磁盘访问。图\ref{fig:comparison_random_key_pattern}b展示了该结果。即便键长度增大，HB$^+$字典树的磁盘时延基本稳定，而B$^+$树的磁盘时延因扇出降低导致的树高度增加而急剧增长。值得注意的是，当键长度小鱼256字节时，前缀B$^+$树也展现了一个基本稳定的磁盘时延。这是因为随机键基本不包含公共前缀，因此索引节点中的最小可区分子串变得非常小，所以每个索引节点的扇出依旧很大。虽然叶节点的低扇出放大了空间开销，索引节点的高扇出还是可以缩短树的高度。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{comparison_using_worst_small_2level_key_patterns.png}
+        \put(13,-1){\scriptsize 最糟}
+        \put(23,-1){\scriptsize 小键}
+        \put(33,-1){\scriptsize 两层}
+        \put(68,-1){\scriptsize 最糟}
+        \put(78,-1){\scriptsize 小键}
+        \put(88,-1){\scriptsize 两层}
+        \put(17,-6){\scriptsize （a）空间开销}
+        \put(70,-6){\scriptsize （b）HDD磁盘时延}
+        \put(-5,20){\scriptsize \parbox[l]{1em}{空间开销（MB）}}
+        \put(50,20){\scriptsize \parbox[l]{1em}{磁盘时延（ms）}}
+    \end{overpic}
+    \\[3em]
+	\caption{在随机键模式下，B$^+$树、前缀B$^+$树和HB$^+$字典树的对比实验。\label{fig:comparison_using_worst_small_2level_key_patterns}}
+\end{figure}
+
+下面我们使用相同的评估手段测试最糟、小键和两层键模式。图\ref{fig:comparison_using_worst_small_2level_key_patterns}展示了每种索引结构的空间开销和磁盘时延。这里HB$^+$字典树w/o模式表示没有避免倾斜优化的HB$^+$字典树，HB$^+$字典树w/模式代表开启优化的HB$^+$字典树。
+
+在最糟模式下，相比于B$^+$树，前缀B$^+$树的空间开销有大幅度的降低，这是因为键中有大量的公共前缀，并且其长度足够长。在对比中，未优化的HB$^+$字典树比B$^+$树占用了更多的空间，这是因为这种键模式导致字典是倾斜，整体块使用率变得非常低。更糟的是，未优化的HB$^+$字典树的磁盘时延是B$^+$树的2.8倍，是前缀B$^+$的3.4倍。然而，经过优化的HB$^+$字典树通过使用叶B$^+$树有效的降低开销。无论是空间开销或是磁盘时延HB$^+$字典树都小于前缀B$^+$树，因为HB$^+$字典树中每个叶B$^+$树是采用前缀B$^+$树实现的。
+
+不同于最糟模式，小键模式中每个块存在大量的分支，因此字典树状索引优于树状索引。如图\ref{fig:comparison_using_worst_small_2level_key_patterns}所示，未优化HB$^+$字典树的空间开销与磁盘时延已经优于B$^+$树和前缀B$^+$树。而经过优化的HB$^+$字典树同样展示了类似的性能，这是我们对因为叶B$^+$树的延伸时机把握的特别好，从而使得该数据结构的空间开销几乎与原生HB$^+$树相同。
+
+因为在两层模式下，每个块同样有很多分支，所以未优化HB$^+$字典树的磁盘时延优于B$^+$树和前缀B$^+$树。然而，每第三个块平均仅有$1,000,000/192^2\simeq27$个分支，这远远小于非叶B$^+$树节点的最大扇出（本测试中为256）。因此存在很多几乎为空的块，从而导致原生HB$^+$字典树的空间开销大于B$^+$树和前缀B$^+$树。正如我们在3.2.3章中提到的，这种优化方式对这种情况处理的很好，避免叶B$^+$树被扩展。所以优化后HB$^+$字典树的空间开销小于前缀B$^+$树。
+
+\subsection{整体系统性能表现}
+
+下面我们对ForestDB整体系统性能进行评测，我们将之与Couchstore 2.2.0、LevelDB 1.18和RocksDB 3.5对比。为了公平起见，LevelDB、RocksDB和ForestDB的API层均被转化为Couchstore操作。在LevelDB和RocksDB中开启了Snappy文档压缩，但是文档是随机产生的，因此只有键部分可以被压缩。对于Couchstore和ForestDB，当陈旧数据占项数据尺寸的30\%时，将触发压缩操作，而LevelDB和RocksDB则使用后台独立线程持续进行压缩操作。ForestDB的写缓冲阈值配置为默认值4096个文档，所有系统的性能评估中都关闭了O\_DIRECT标记。为了减少LevelDB和RocksDB的写放大问题，我们为其增加了每键位数为10的布隆过滤器。除不支持缓存功能的Couchstore外，我们将每个系统的自定义块缓存设为8GB。
+
+每个系统使用2亿个键及其对应文档初始化，文档的尺寸时1024字节（不含键长）。总体工作集的尺寸在190到200GB之间，几乎时RAM容量的6倍。所有测评都使用两层键模式。因为HDD太慢（低于100 ops每秒），难以初始化每个系统，得到有意义的结果，我们使用Samsung 850 Pro 512 GB SSD\footnote{MZ-7KE512B，最大读取速率：550 MB/秒，最大写入速率：520 MB/秒，随机读取：100,000 IOPS，随机写入：90,000 IOPS。}替代HDD进行整体系统评测。我们确保在SDD上进行的整体相对评测结果与HHD类似。
+
+\subsubsection{键长度}
+
+首先我们测试在不同键长度（16-1024字节）下，各系统的整体性能表现。为了清晰的观察键长度产生的影响，在这个测评中，我们随机产生键，使用尺寸为512字节的文档。随机执行大量的读取与更新操作，其中更新操作占总操作的20\%。批量更新操作以同步写入的方式应用，我们随机批量查询10到100个文档。而Couchstore在键长超过512字节时不能正确工作，因此在对Couchstore的测评中我们使用512字节的键代替1024字节的键。
+
+图\ref{fig:various_key_lengths_performance_comparison}a通过每秒操作数体现整体吞吐量。随着键长增大，Couchstore、LevelDB和RocksDB下降了3-11.3倍，而得益于HB$^+$字典树，ForestDB仅下降了37\%。虽然HB$^+$字典树几乎不受键长影响，但ForestDB的吞吐量仍然随键长增加有略微下降，这是由于文档中包含键字符串作为元数据，而键的增长导致了文档的增长。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{various_key_lengths_performance_comparison.png}
+        \put(20,-3){\scriptsize 键长度（字节）}
+        \put(76,-3){\scriptsize 键长度（字节）}
+        \put(8,-6){\scriptsize （a）含20\%更新的无序操作的整体吞吐量}
+        \put(63,-6){\scriptsize （b）每单独更新操作导致的平均写放大效应}
+        \put(-3,20){\scriptsize \parbox[l]{1em}{每秒操作数}}
+        \put(53,20){\scriptsize \parbox[l]{1em}{写放大效应}}
+    \end{overpic}
+    \\[3em]
+	\caption{不同键长下的性能对比。\label{fig:various_key_lengths_performance_comparison}}
+\end{figure}
+
+因为所有的方案都采用异地更新的方法，因此空间开销会随着更新操作的增加而增长。图\ref{fig:various_key_lengths_performance_comparison}b展示了平均写放大现象以及压缩操作开销。随键长增加，Couchstore、LevelDB和RocksDB产生更多的磁盘写入操作，而ForestDB的写操作数几乎是稳定的。注意其中LevelDB的写操作数远大于其他方案，因为基于LSM树的LevelDB在更新过程中触发了大量的合并和压缩操作。虽然RocksDB同样基于LSM树结构，但它使用变种的结构以优化写放大问题。
+
+\subsubsection{读/写比率}
+
+为了探究在不同读写比率下的性能特点，我们使用0-100\%比例的更新操作进行整体吞吐量评测。键长度固定为32字节，在键空间内随机执行操作。我们同先前的评测一样，使用同步写操作。
+
+图\ref{fig:various_update_ratios_concurrent_reader_threads_performance_comparison}a 呈现了测试结果。因为LevelDB、RocksDB和ForestDB使用结构化日志方案，它们的整体吞吐量随更新比例的增加而增长。所有更新操作被顺序的记录，无需检索或更新主索引，因此顺序写入磁盘的操作随更新比例的增加而增加。与此不同的是，无论更新比例如何，Couchstore的吞吐量几乎是稳定的，因为所有的更新都立即反应在B$^+$树上。虽然Couchstore同样采用只追加的设计，但更新或追加新的B$^+$树节点需要读取旧版本的节点。又因为旧节点随机的散落在磁盘上，随机读抵消了顺序更新和追加日志来带的性能提升。
+
+值得注意的是，虽然ForestDB中的HB$^+$字典树采用分级混合B$^+$树结构，但其读性能要优于使用布隆过滤器的LevelDB和RocksDB。这是因为ForestDB的整体索引尺寸比较紧凑，HB$^+$字典树中每一级的B$^+$树仅存储相应的块，而非键字符串。所以，这同时增加了操作系统页缓存和DB自身缓存的命中率，进而降低了单操作引起的平均实际磁盘访问数。
+
+当工作负载变为只读时，所有系统的整体性能都略微优于仅包含少部分更新操作的工作负载。如果没有更新操作，那么就不需要执行压缩或合并操作，我们便可以节省由压缩操作引起的额外的磁盘I/O。
+
+\subsubsection{并发读/写操作}
+
+ForestDB和Couchstore都基于MVCC模式，并发读写操作不会相互阻塞。为了探究多线程性能，我们创建了一个写线程，其以2000 ops每秒不断地进行随机写入操作，同时创建多个读线程以最大速率进行随机读操作。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{various_update_ratios_concurrent_reader_threads_performance_comparison.png}
+        \put(20,-3){\scriptsize 更新比率（\%）}
+        \put(76,-3){\scriptsize 读线程数}
+        \put(6,-6){\scriptsize （a）不同更新比率下无序操作的整体吞吐量}
+        \put(68,-6){\scriptsize （b）并发读线程的吞吐量}
+        \put(-2,20){\scriptsize \parbox[l]{1em}{每秒操作数}}
+        \put(51,20){\scriptsize \parbox[l]{1em}{每秒操作数}}
+    \end{overpic}
+    \\[3em]
+	\caption{不同更新比率（a）和并发线程数（b）下的性能对比。\label{fig:various_update_ratios_concurrent_reader_threads_performance_comparison}}
+\end{figure}
+
+图\ref{fig:various_update_ratios_concurrent_reader_threads_performance_comparison}b 展示了多个并发读取线程的读吞吐量和。当只使用单线程读取时，LevelDB和RocksDB的整体读取吞吐量大大小于图\ref{fig:various_update_ratios_concurrent_reader_threads_performance_comparison}a中数据。这是因为写操作和写操作触发的额外合并或压缩操作阻塞了并发读操作。相反，ForestDB和Couchstore甚至比单线程的成绩\footnote{图\ref{fig:various_update_ratios_concurrent_reader_threads_performance_comparison}b中去除了写线程2000 ops每秒的吞吐量，因此单读线程的整体吞吐量要高于图\ref{fig:various_update_ratios_concurrent_reader_threads_performance_comparison}a}更好，这是因为读线程几乎不被写线程影响。
+
+随着并发读线程数的增加，所有系统的读吞吐量都有提升。这意所有系统中的味着并发读操作都不会阻塞自身。因为存在磁盘I/O瓶颈，部分点的读吞吐量是饱和的。
+
+\subsubsection{范围扫描}
+
+基于LSM树方案的主要优点之一就是范围扫描性能高，因为除$C_0$日志外的所有树形组件都采用有序的方式维护。相反，类似ForestDB和Couchstore这样的只追加方案并不擅长范围扫描，因为更新被简单的追加到DB文件的末尾，因此键空间内连续的文档在磁盘上可能并不处于相邻的物理位置。然而，通过压缩操作，文档会以有序的形式迁移到新的文件，因此范围扫面性能会较之前更好。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{range_scan_performance.png}
+        \put(36,-3){\scriptsize 100文档}
+        \put(65,-3){\scriptsize 1000文档}
+        \put(-4,30){\scriptsize \parbox[l]{1em}{每秒操作数}}
+    \end{overpic}
+    \\[2em]
+	\caption{范围扫描性能。 \label{fig:range_scan_performance}}
+\end{figure}
+
+为了评测范围扫描性能，我们随机挑选一个文档，顺序扫描其后的100或1000个连续的文档。图\ref{fig:range_scan_performance}展示了评测结果。图中Couchstore（c）和ForestDB（c）代表已经完成压缩操作的Couchstore和ForestDB。在两个用例中，LevelDB都实现了最高的吞吐量。合并操作前Couchstore和ForestDB的范围扫描性能与随机读性能差不多，而压缩操作后的ForestDB的范围扫描性能几乎可以和LevelDB比肩。而压缩操作后的Couchstore对于范围扫描变现同样糟糕。这是因为Couchstore自身不维护块缓存，所以它交替访问文档和B$^+$树节点的磁盘物理空间是不相邻的。
+
+\subsubsection{写缓存和HB$^+$字典树的影响}
+
+我们下一步观察写缓存和HB$^+$字典树对ForestDB的独立影响。图\ref{fig:characteristics_of_forestdb_with_various_indexing_configurations}展示了在不同索引选项下ForestDB的总体吞吐和写放大情况：HB$^+$trie代表不使用写缓存的ForestDB，B$^+$tree代表不使用写缓存且使用原生B$^+$树作为索引结构的ForestDB，B$^+$tree+WB代表ForestDB使用原生B$^+$树作为索引结构且开启写缓存，HB$^+$trie+WB代表普通的ForestDB。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{characteristics_of_forestdb_with_various_indexing_configurations.png}
+        \put(15,-2){\scriptsize 写吞吐量}
+        \put(45,-2){\scriptsize 读吞吐量}
+        \put(86,-2){\scriptsize 写放大}
+        \put(22,-6){\scriptsize （a）无序操作的读写吞吐量}
+        \put(73,-6){\scriptsize （b）对B$^+$树归一化的写放大}
+        \put(-3,20){\scriptsize \parbox[l]{1em}{每秒操作数}}
+    \end{overpic}
+    \\[3em]
+	\caption{不同更新比率（a）和并发线程数（b）下的性能对比。\label{fig:characteristics_of_forestdb_with_various_indexing_configurations}}
+\end{figure}
+
+由于HB$^+$字典树可以降低每文档操作导致的磁盘访问量，使用HB$^+$字典树的读写整体吞吐量都比较高。图\ref{fig:characteristics_of_forestdb_with_various_indexing_configurations}b揭示了写缓冲通过缓冲索引节点更新有效的减少了写放大效应，对于B$^+$树或HB$^+$字典树都适用。Couchstore的写放大效应略优于B$^+$tree。这是因为相比于Couchstore，ForestDB在文档的元数据部分写入了更多的数据。
+
+\subsubsection{局部性}
+
+为了评估局部性负载下的性能变化，我们按照Zipf定律执行读取和更新操作。假设共有$N$项，则根据Zipf定律，第$p$项的频率函数为$f(p,s,N)=\frac{1}{p^s}/\sum_{n=1}^N\frac{1}{n^s}$，其中$s$为确定分布特征的参数。$p=1$的项具有最高的频率，随$p$值增大，频率逐渐降低。若$s$值趋近于$0$，频率分布则趋近于平均分布，而$s$越大，不同项之间频率差距越大。
+
+我们随机选择10000个文档作为一个文档组，则2亿文档中有20000个文档组。然后我们使用$N=20000$的Zipf定律创建20000组频率，每组频率一一对应到随机选择的文档组。为了执行读取和更新操作，（1）基于预定频率随意选择一个文档组（2）在组中随机选择一个文档。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{performance_comparison_according_to_the_value_of_s.png}
+        \put(21,-3){\scriptsize 文档（\%）}
+        \put(79,-3){\scriptsize $s$}
+        \put(8,-6){\scriptsize （a）$N=20000$时Zipf累积分布函数图}
+        \put(57,-6){\scriptsize （b）基于Zipf分布，含20\%更新操作的整体吞吐量}
+        \put(-3,20){\scriptsize \parbox[l]{1em}{访问比（\%）}}
+        \put(50,20){\scriptsize \parbox[l]{1em}{每秒操作数}}
+    \end{overpic}
+    \\[3em]
+	\caption{不同$s$取值Zipf分布下的性能对比。\label{fig:performance_comparison_according_to_the_value_of_s}}
+\end{figure}
+
+图\ref{fig:performance_comparison_according_to_the_value_of_s}a是不同$s$取值下，每个文档访问累积分布函数图。我们可以通过不同的$s$取值控制负载局部性；负载局部性随$s$值的增加而提高。例如，当$s=1$时，大约80\%的访问集中在10\%的文档上。
+
+不同类型局部性负载下总体性能对比结果展示在图\ref{fig:performance_comparison_according_to_the_value_of_s}b中。每种系统的吞吐两都随局部性的提高而提升，因为高局部性会提高操作系统页缓存的命中率，从而降低了访问操作造成的实际磁盘访问数。ForestDB随局部性增加的性能提升率远优于其他系统。这是因为ForestDB中每文档平均索引尺寸远小于其他系统，因此同容量的RAM可以缓存更多的索引数据。
+
+\subsubsection{真实数据集结果}
+
+我们最后使用由一个在线音乐流服务和垃圾网站集上获得的真实数据集评测所有的系统。表3描述了各个数据集的特征。每一个系统都使用数据集初始化，我们平均随机的执行读操作，并且同步执行更新操作。更新操作占操作总数的比为20\%，这与之前的评测相同。因为用户信息、播放列表、历史记录和状态数据集尺寸都适用于RAM，所以它们的整体吞吐量远高于Url数据集。这是因为整个DB文件都维护在操作系统页缓存中，因此读操作没有触发磁盘I/O。
+
+\begin{figure}[htbp]
+    \centering
+    {
+    \bfseries
+    表3 \\
+    真实数据集的特征 \\[1.5em]
+    }
+    \begin{tabular}{|p{4em}p{16em}p{4em}p{4em}p{4em}p{4em}|}
+    \hline
+    名称 & 描述 & 平均键长 & 平均文档尺寸 & 文档数量 & 数据集尺寸 \\
+    \hline
+    用户信息 & 使用用户ID索引的用户信息，例如用户名、电子邮箱和密码Hash值等。 & 33字节 & 230字节 & 4,839,099 & 1.7GB \\
+    播放列表 & 使用ID索引的播放列表详细信息，例如拥有者ID、名称和修改时间等。 & 39字节 & 1,008字节 & 592,935 & 700MB \\
+    历史记录 & 存储用户的活动记录，例如更新播放列表时记录时间戳和对应的活动ID。 & 29字节 & 2,772字节 & 1,694,980 & 4.7GB \\
+    状态 & 使用用户电子邮箱或ID索引其当前的状态信息。 & 23字节 & 21字节 & 1,125,352 & 200MB \\
+    Url & WEBSPAM-UK2007标准的Url值，垃圾网站集，Url作为键，文档随机产生。 & 111字节 & 1,024字节 & 105,896,555 & 112GB \\
+
+    \hline
+    \end{tabular}
+\end{figure}
+
+图\ref{the_overall_throughput_using_real_datasets}展现了测评结果。无论是何种数据集，Couchstore的整体性能几乎稳定。相反，LevelDB和RocksDB在文档总尺寸（键尺寸和文档内容尺寸之和）较小的时候表现出更好的性能。这是因为这些系统中每层的有序表同时存储键和文档内容，所以文档内容的尺寸影响着合并操作和压缩操作的开销。在Url数据集中，得益于RocksDB对I/O负载的优化，其性能优于LevelDB。
+
+\begin{figure}[htbp]
+    \centering
+    \begin{overpic}[scale=0.6]{the_overall_throughput_using_real_datasets.png}
+        \put(100,0){\scriptsize 100}
+        \put(15,-1){\scriptsize 用户信息}
+        \put(26,-1){\scriptsize 播放列表}
+        \put(38,-1){\scriptsize 历史记录}
+        \put(51,-1){\scriptsize 状态}
+        \put(86,-1){\scriptsize Url}
+        \put(-3,20){\scriptsize \parbox[l]{1em}{每秒操作数}}
+        \put(67,20){\scriptsize \parbox[l]{1em}{每秒操作数}}
+    \end{overpic}
+    \\[1em]
+	\caption{不同$s$取值Zipf分布下的性能对比。\label{fig:the_overall_throughput_using_real_datasets}}
+\end{figure}
+
+在所有数据集中，ForestDB的整体性能表现都要优于其他系统，因为HB$^+$字典树同事减少了从跟节点到叶的遍历路径长度和整体索引尺寸，索引的开销不仅由I/O设备负载，还通过内存分担。
