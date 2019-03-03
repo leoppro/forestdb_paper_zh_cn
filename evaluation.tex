@@ -215,7 +215,7 @@ ForestDB和Couchstore都基于MVCC模式，并发读写操作不会相互阻塞�
     \end{tabular}
 \end{figure}
 
-图\ref{the_overall_throughput_using_real_datasets}展现了测评结果。无论是何种数据集，Couchstore的整体性能几乎稳定。相反，LevelDB和RocksDB在文档总尺寸（键尺寸和文档内容尺寸之和）较小的时候表现出更好的性能。这是因为这些系统中每层的有序表同时存储键和文档内容，所以文档内容的尺寸影响着合并操作和压缩操作的开销。在Url数据集中，得益于RocksDB对I/O负载的优化，其性能优于LevelDB。
+图\ref{fig:the_overall_throughput_using_real_datasets}展现了测评结果。无论是何种数据集，Couchstore的整体性能几乎稳定。相反，LevelDB和RocksDB在文档总尺寸（键尺寸和文档内容尺寸之和）较小的时候表现出更好的性能。这是因为这些系统中每层的有序表同时存储键和文档内容，所以文档内容的尺寸影响着合并操作和压缩操作的开销。在Url数据集中，得益于RocksDB对I/O负载的优化，其性能优于LevelDB。
 
 \begin{figure}[htbp]
     \centering
